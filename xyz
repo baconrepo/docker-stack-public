@@ -1,0 +1,531 @@
+
+##DOCKER COMPOSE FOR VM #4,301 ######
+
+##uses /opt/docker-data for container volumes
+
+
+---
+version: "3.4"
+##########
+#SERVICES#
+#pihole
+##########
+services:
+
+
+
+## PIHOLE ##
+
+  pihole:
+    container_name: pihole
+    image: pihole/pihole:latest
+    # For DHCP it is recommended to remove these ports and instead add: network_mode: "host"
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+     # - "67:67/udp" # Only required if you are using Pi-hole as your DHCP server
+      - "82:80/tcp"
+    environment:
+      TZ: 'America/Chicago'
+     # WEBPASSWORD: or it will be random'
+    # Volumes store your data between container upgrades
+    volumes:
+      - './etc-pihole:/etc/pihole'
+      - './etc-dnsmasq.d:/etc/dnsmasq.d'
+    #   https://github.com/pi-hole/docker-pi-hole#note-on-capabilities
+    cap_add:
+      - NET_ADMIN # Required if you
+
+
+  #PORTAINER#
+  portainer:
+    image: portainer/portainer-ce
+    container_name: portainer
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.portainer.entrypoints=https"
+      - "traefik.http.routers.portainer.rule=Host(`CHANGEME.COM`)"
+      - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+      - "traefik.http.routers.portainer.tls=true"
+      - "traefik.http.routers.portainer.tls.certresolver=dns-cloudflare"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/docker-data/portainer:/data
+    expose:
+      - 8000
+      - 9000
+    ports:
+      - 8000:8000
+    #  - 9000:9000
+    restart: unless-stopped
+
+  #TRAEFIK#
+  traefik:
+    image: 'traefik:v2.2.1'
+    container_name: traefik
+    dns:
+      - 1.1.1.1
+    command: # CLI arguments
+      - --global.checkNewVersion=true
+      - --global.sendAnonymousUsage=false
+      - --entryPoints.http.address=:80
+      - --entryPoints.https.address=:443
+      # Allow these IPs to set the X-Forwarded-* headers - Cloudflare IPs: https://www.cloudflare.com/ips/
+      - --entrypoints.https.forwardedHeaders.trustedIPs=173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22
+      - --entryPoints.traefik.address=:8080
+      # - --entryPoints.ping.address=:8081
+      - --api=true
+      #- --api.insecure=false
+      #- --api.dashboard=true
+      #- --ping=true
+      #- --pilot.token=$TRAEFIK_PILOT_TOKEN
+      #- --serversTransport.insecureSkipVerify=true
+      - --log=true
+      - --log.level=DEBUG
+      - --accessLog=true
+      - --accessLog.filePath=/var/log/traefik.log
+      - --accessLog.bufferingSize=100 # Configuring a buffer of 100 lines
+      - --accessLog.filters.statusCodes=400-499
+      - --providers.docker=true
+      - --providers.docker.endpoint=unix:///var/run/docker.sock
+      # Automatically set Host rule for services
+      #- --providers.docker.defaultrule=Host(`{{ index .Labels "com.docker.compose.service" }}.$DOMAINNAME0`)
+      - --providers.docker.exposedByDefault=false
+      #- --entrypoints.https.http.middlewares=chain-oauth@file
+      - --entrypoints.https.http.tls.options=tls-opts@file
+      # Add dns-cloudflare as default certresolver for all services. Also enables TLS and no need to specify on individual services
+      - --entrypoints.https.http.tls.certresolver=dns-cloudflare
+      - --entrypoints.https.http.tls.domains[0].main=$MY_DOMAIN
+      - --entrypoints.https.http.tls.domains[0].sans=*.$MY_DOMAIN
+      #- --entrypoints.https.http.tls.domains[1].main=$DOMAINNAME1 # Pulls main cert for second domain
+      #- --entrypoints.https.http.tls.domains[1].sans=*.$DOMAINNAME1 # Pulls wildcard cert for second domain
+      #- --providers.docker.network=traefiknet
+      - --providers.docker.swarmMode=false
+      - --providers.file.directory=/rules # Load dynamic configuration from one or more .toml or .yml files in a directory
+      # - --providers.file.filename=/path/to/file # Load dynamic configuration from a file
+      - --providers.file.watch=true # Only works on top level files in the rules folder
+      #- --certificatesResolvers.dns-cloudflare.acme.caServer=https://acme-v02.api.letsencrypt.org/directory # LetsEncrypt Staging Server - uncomment when testing
+      - --certificatesResolvers.dns-cloudflare.acme.email=$CLOUDFLARE_EMAIL
+      - --certificatesResolvers.dns-cloudflare.acme.storage=/acme.json
+      - --certificatesResolvers.dns-cloudflare.acme.dnsChallenge.provider=cloudflare
+      - --certificatesResolvers.dns-cloudflare.acme.dnsChallenge.resolvers=1.1.1.1:53,1.0.0.1:53
+      - --certificatesResolvers.dns-cloudflare.acme.dnsChallenge.delayBeforeCheck=90 # To delay DNS check and reduce LE hitrate
+    ports:
+      - target: 80
+        published: 80
+        protocol: tcp
+        mode: host
+      - target: 443
+        published: 443
+        protocol: tcp
+        mode: host
+      - target: 8080
+        published: 8080
+        protocol: tcp
+        mode: host
+    volumes:
+      - /opt/docker-data/traefik/rules:/rules
+      - /opt/docker-data/traefik/acme/acme.json:/acme.json
+      - /opt/docker-data/traefik/data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/log/traefik:/var/log/traefik
+    environment:
+      - CF_API_EMAIL=$CLOUDFLARE_EMAIL
+      - CF_API_KEY=$CLOUDFLARE_API_KEY
+    labels:
+      #- "autoheal=true"
+      - "traefik.enable=true"
+      # HTTP-to-HTTPS Redirect
+      - "traefik.http.routers.http-catchall.entrypoints=http"
+      - "traefik.http.routers.http-catchall.rule=HostRegexp(`{host:.+}`)"
+      - "traefik.http.routers.http-catchall.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      # HTTP Routers
+      - "traefik.http.routers.traefik-rtr.entrypoints=https"
+      - "traefik.http.routers.traefik-rtr.rule=Host(`CHANGEME.COM`)"
+#      - "traefik.http.routers.traefik-rtr.tls=true"
+      - "traefik.http.routers.traefik-rtr.tls.certresolver=dns-cloudflare" # Comment out this line after first run of traefik to force the use of wil
+      - "traefik.http.routers.traefik-rtr.tls.domains[0].main=$MY_DOMAIN"
+      - "traefik.http.routers.traefik-rtr.tls.domains[0].sans=*.$MY_DOMAIN"
+      ## Services - API
+      - "traefik.http.routers.traefik-rtr.service=api@internal"
+      ## Healthcheck/ping
+      #- "traefik.http.routers.ping.rule=Host(`traefik.$DOMAINNAME0`) && Path(`/ping`)"
+      #- "traefik.http.routers.ping.tls=true"
+      #- "traefik.http.routers.ping.service=ping@internal"
+      ## Middlewares
+      #- "traefik.http.routers.traefik-rtr.middlewares=chain-oauth@file"
+      - "traefik.http.services.traefik-rtr.loadbalancer.server.port=8080"
+    restart: unless-stopped
+
+  ## PLEX ##
+  plex:
+    image: linuxserver/plex
+    container_name: plex
+    network_mode: host
+    volumes:
+      - /opt/docker-data/plex-config:/config
+      - /tmp/plex-transcode:/transcode
+      - /mnt:/mnt
+    environment:
+      - PUID=$PUID
+      - PGID=$PGID
+      - VERSION=docker
+      #- ALLOWED_NETWORKS=192.168.1.0/24
+      - TZ=$TZ
+      - ADVERTISE_IP=https://192.168.1.222:32400 CHANGEME.COM
+      - PLEX_CLAIM=claim-###CHANGEME#########
+    ports:
+      - 32400:32400
+      - 1900:1900/udp
+      - 3005:3005
+      - 5353:5353/udp
+      - 8324:8324
+      - 32410:32410/udp
+      - 32412:32412/udp
+      - 32413:32413/udp
+      - 32414:32414/udp
+      - 32469:32469
+    restart: unless-stopped
+
+  ## SONARR ##
+  sonarr:
+    image: linuxserver/sonarr
+    container_name: sonarr
+    environment:
+      - PUID=$PUID
+      - PGID=$PGID
+      - TZ=$TZ
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.sonarr.entrypoints=https"
+      - "traefik.http.routers.sonarr.rule=Host(`CHANGEME.COM`)"
+      - "traefik.http.routers.sonarr.tls=true"
+      - "traefik.http.routers.sonarr.tls.certresolver=dns-cloudflare"
+
+    volumes:
+      - /opt/docker-data/sonarr:/config
+      - /mnt:/mnt
+    expose:
+      - 8989
+    restart: unless-stopped
+
+  ## RADARR ##
+  radarr:
+    image: linuxserver/radarr
+    container_name: radarr
+    environment:
+      - PUID=$PUID
+      - PGID=$PGID
+      - TZ=$TZ
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.radarr.entrypoints=https"
+      - "traefik.http.routers.radarr.rule=Host(`CHANGEME.COM`)"
+      #- "traefik.http.routers.radarr.rule=Host(`CHANGEME.COM`)"
+
+      - "traefik.http.routers.radarr.tls=true"
+      - "traefik.http.routers.radarr.tls.certresolver=dns-cloudflare"
+    volumes:
+      - /opt/docker-data/radarr:/config
+      - /mnt:/mnt
+    expose:
+      - 7878
+    restart: unless-stopped
+
+  ## PROWLARR ##
+  prowlarr:
+    image: linuxserver/prowlarr:develop
+    container_name: prowlarr
+    environment:
+      - PUID=$PUID
+      - PGID=$PGID
+      - TZ=$TZ
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.prowlarr.entrypoints=https"
+      - "traefik.http.routers.prowlarr.rule=Host(`CHANGEME.COM`)"
+      - "traefik.http.routers.prowlarr.tls=true"
+      - "traefik.http.routers.prowlarr.tls.certresolver=dns-cloudflare"
+    volumes:
+      - /opt/docker-data/prowlarr:/config
+      - /mnt:/mnt
+    expose:
+      - 9696
+    restart: unless-stopped
+
+  ## BAZARR ##
+  bazarr:
+    image: linuxserver/bazarr
+    container_name: bazarr
+    environment:
+      - PUID=$PUID
+      - PGID=$PGID
+      - TZ=$TZ
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.bazarr.entrypoints=https"
+      - "traefik.http.routers.bazarr.rule=Host(`CHANGEME.COM`)"
+      - "traefik.http.routers.bazarr.tls=true"
+      - "traefik.http.routers.bazarr.tls.certresolver=dns-cloudflare"
+    volumes:
+      - /opt/docker-data/bazarr:/config
+      - /mnt:/mnt
+    expose:
+      - 6767
+    restart: unless-stopped
+
+  ## LIDARR ##
+  lidarr:
+    image: linuxserver/lidarr
+    container_name: lidarr
+    environment:
+      - PUID=$PUID
+      - PGID=$PGID
+      - TZ=$TZ
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.lidarr.entrypoints=https"
+      - "traefik.http.routers.lidarr.rule=Host(`CHANGEME.COM`)"
+      - "traefik.http.routers.lidarr.tls=true"
+      - "traefik.http.routers.lidarr.tls.certresolver=dns-cloudflare"
+    volumes:
+      - /opt/docker-data/lidarr:/config
+      - /mnt:/mnt
+    expose:
+      - 8686
+    restart: unless-stopped
+
+  ## QBIT ##
+  qbittorrent:
+    image: binhex/arch-qbittorrentvpn
+    container_name: qbittorrent
+    environment:
+      - VPN_PROV=CHANGEME
+      - VPN_ENABLED=yes
+      - VPN_CLIENT=openvpn MAYBE CHANGEME
+      - VPN_USER=CHANGEME
+      - VPN_PASS=CHANGEME
+      - PUID=0
+      - PGID=0
+      - UMASK=$UMASK
+      - TZ=$TZ
+      - LAN_NETWORK=10.0.0.1/16 CHANGEME
+  #    - STRICT_PORT_FORWARD=yes
+      - DEBUG=false
+      - ENABLE_PRIVOXY=no
+
+#    labels:
+#      - "traefik.enable=true"
+#      - "traefik.http.routers.prowlarr.entrypoints=https"
+#      - "traefik.http.routers.prowlarr.rule=Host(`CHANGEME.COM`)"
+#      - "traefik.http.routers.prowlarr.tls=true"
+#      - "traefik.http.routers.prowlarr.tls.certresolver=dns-cloudflare"
+
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.qbit.entrypoints=https"
+      - "traefik.http.routers.qbit.rule=Host(`CHANGEME.COM`)"
+      - "traefik.http.routers.qbit.tls=true"
+      - "traefik.http.services.qbit.loadbalancer.server.port=8080"
+#      - "traefik.http.routers.qbit.tls.certresolver=dns-cloudflare"
+    volumes:
+      - /opt/docker-data/qbittorrent:/config
+      - /mnt:/mnt
+    expose:
+      - 8080
+      - 6884
+#      - 6881
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+
+## MINECRAFT  ##
+#  mc-server:
+#    container_name: mc-server
+#    image: itzg/minecraft-server:latest
+#    tty: true
+#    stdin_open: true
+#    restart: unless-stopped
+#    environment:
+#      - EULA=TRUE
+#      - MAX_PLAYERS=50
+     # - TYPE=VANILLA
+#      - MEMORY=4G
+#      - MAX_MEMEORY=4G
+#      - SERVER_NAME=CHANGEME
+#      - OPS=YOURUSERNAMEHERE CHANGEME
+#      - ALLOW_NETHER=true
+#      - WHITELIST=YOURUSERNAMEANDFRIENDSUSERNAMESHERE CHANGEME
+#      - MOTD=TREE - MC Server
+#      - ENABLE_RCON=true
+#      - RCON_PORT=25575
+      # https://github.com/itzg/docker-minecraft-server#deploying-plugins-from-attached-volume
+      #- PLUGINS_SYNC_UPDATE=true
+#    ports:
+#      - 25565:25565
+#      - 25575:25575
+#    volumes:
+#      - $DOCKERDATA/minecraft/data:/data
+#      - $DOCKERDATA/minecraft/plugins:/plugins
+
+##  WATCHTOWER  ##
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.watchtower.entrypoints=https"
+      - "traefik.http.routers.watchtower.rule=Host(`CHANGEME.COM`)"
+      - "traefik.http.routers.watchtower.tls=true"
+#      - "traefik.http.services.qbittorrent.loadbalancer.server.port=8080"
+      - "traefik.http.routers.watchtower.tls.certresolver=dns-cloudflare"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 1800
+    expose:
+      - 8080
+
+##  CLOUDFLARE DDNS  ##
+  cloudflare-ddns:
+    container_name: DF-dyn-ip
+    image: oznu/cloudflare-ddns
+    environment:
+      - API_KEY=$CF_DDNS
+      - ZONE=CHANGEME.COM
+      - SUBDOMAIN=dynamic
+      - PROXIED=true
+      - CRON="@daily"
+    restart: unless-stopped
+
+## PROMETHUEUS ##
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    user: root
+    labels:
+      - 'traefik.enable=true'
+      - "traefik.http.routers.prometheus.entrypoints=https"
+      - "traefik.http.routers.prometheus.rule=Host(`prometheus.pi.$MY_DOMAIN`,`prometheus.$MY_DOMAIN`)"
+      - "traefik.http.routers.prometheus.tls=true"
+      - "traefik.http.routers.prometheus.tls.certresolver=dns-cloudflare"
+    #environment:
+    #  - PUID=0
+    #  - PGID=0
+#    user:root
+#     - 'traefik.external.port=9090'
+    volumes:
+      - /opt/docker-data/prometheus/etc:/etc/prometheus/
+      - /opt/docker-data/prometheus/data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    #expose:
+    #  - 9090
+    ports:
+      - 9090:9090
+    links:
+      - cadvisor:cadvisor
+    depends_on:
+      - cadvisor
+    restart: unless-stopped
+
+## PROMETHEUS NODE-EXPORTER
+  node-exporter:
+    image: prom/node-exporter
+    container_name: node-exporter
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - --collector.filesystem.ignored-mount-points
+      - "^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($$|/)"
+    ports:
+      - 9100:9100
+    restart: unless-stopped
+
+## CA-ADVISOR EXPORTER ##
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor
+    container_name: cadvisor
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+      - 8282:8080
+    restart: unless-stopped
+
+## GRAFANA ##
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    user: "root"
+    labels:
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.entrypoints=https"
+      - "traefik.http.routers.grafana.rule=Host(`CHANGEME.COM`)"
+      - "traefik.http.routers.grafana.tls=true"
+      - "traefik.http.routers.grafana.tls.certresolver=dns-cloudflare"
+    ports:
+      - 3000:3000
+    volumes:
+      - /opt/docker-data/grafana/data:/var/lib/grafana
+      - /opt/docker-data/grafana/provisioning/:/etc/grafana/provisioning/
+#    env_file:
+#      - /opt/docker-data/grafana/config.monitoring
+    restart: unless-stopped
+
+
+
+  ## WORDPRESS ##
+#  wordpress2:
+#    depends_on:
+#      - wordpress_db
+#    container_name: wordpress2
+#    image: wordpress:latest
+##    hostname: 192.168.1.222
+#    hostname: CHANGEME.COM
+#    labels:
+#      - "traefik.enable=true"
+#      - "traefik.http.routers.wordpress.entrypoints=https"
+#      - "traefik.http.routers.wordpress.rule=Host(`wordpress.h.$MY_DOMAIN`,`$MY_DOMAIN`)"
+#      - "traefik.http.routers.wordpress.tls=true"
+#      - "traefik.http.routers.wordpress.tls.certresolver=dns-cloudflare"
+#    environment:
+#      WORDPRESS_DB_HOST: wordpress_db:3306
+#      WORDPRESS_DB_USER: $WORDPRESS_DB_USER
+#      WORDPRESS_DB_PASSWORD: $WORDPRESS_DB_PASS
+#      WORDPRESS_DB_NAME: wordpress
+#    volumes:
+#      - /opt/docker-data/wordpress:/var/www/html
+#    expose:
+#      - 443
+#      - 80
+#      - 8080
+#    restart: unless-stopped
+#    #ports:
+#      #- 8080:80
+#
+#  ## WP DB ##
+#  wordpress_db:
+#    image: mysql:5.7
+#    container_name: wordpress_db
+#    environment:
+#      MYSQL_ROOT_PASSWORD: $WORDPRESS_DB_PASS
+#      MYSQL_DATABASE: wordpress
+#      MYSQL_USER: $WORDPRESS_DB_USER
+#      MYSQL_PASSWORD: $WORDPRESS_DB_PASS
+#    volumes:
+#      - /opt/docker-data/wordpress-sql:/var/lib/mysql
+#    restart: unless-stopped
